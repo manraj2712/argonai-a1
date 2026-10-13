@@ -1,0 +1,101 @@
+name: image-intake
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://intake:intake@postgres:5432/intake
+  SESSION_SECRET: ${SESSION_SECRET:-local-development-secret-change-me}
+  S3_BUCKET: image-intake
+  S3_REGION: us-east-1
+  S3_ENDPOINT: http://storage:9000
+  S3_PUBLIC_ENDPOINT: http://localhost:9000
+  S3_ACCESS_KEY_ID: localaccess
+  S3_SECRET_ACCESS_KEY: localsecret
+  S3_FORCE_PATH_STYLE: 'true'
+  COOKIE_SECURE: 'false'
+  S3_CREATE_BUCKET: 'true'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: intake
+      POSTGRES_PASSWORD: intake
+      POSTGRES_DB: intake
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/create-test-database.sql:/docker-entrypoint-initdb.d/create-test-database.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U intake -d intake']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # S3-compatible storage; MinIO no longer publishes community images
+  storage:
+    image: chrislusf/seaweedfs:4.48
+    command: server -s3 -dir=/data -s3.port=9000
+    environment:
+      AWS_ACCESS_KEY_ID: localaccess
+      AWS_SECRET_ACCESS_KEY: localsecret
+    ports:
+      - '9000:9000'
+    volumes:
+      - storage-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:9000/healthz || exit 1']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: [app]
+    environment: *app-env
+    command: ['pnpm', 'db:migrate']
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: [app]
+    environment: *app-env
+    command: ['node', 'dist/main.js']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    profiles: [app]
+    environment: *app-env
+    command: ['node', 'dist/worker.js']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    profiles: [app]
+    ports:
+      - '8080:80'
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
+  storage-data:

@@ -1,0 +1,117 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ImageStatus {
+  awaiting_upload
+  pending
+  processing
+  accepted
+  rejected
+  failed
+
+  @@map("image_status")
+}
+
+enum ImageFormat {
+  jpeg
+  png
+  heic
+
+  @@map("image_format")
+}
+
+enum CheckCode {
+  file_size
+  format
+  resolution
+  blur
+  face_count
+  face_size
+  similarity
+
+  @@map("check_code")
+}
+
+enum CheckOutcome {
+  passed
+  failed
+  skipped
+
+  @@map("check_outcome")
+}
+
+enum RejectionReason {
+  file_too_small
+  file_too_large
+  unsupported_format
+  unreadable_image
+  resolution_too_low
+  resolution_too_high
+  blurry
+  no_face
+  multiple_faces
+  face_too_small
+  too_similar
+
+  @@map("rejection_reason")
+}
+
+model Owner {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  images    Image[]
+
+  @@map("owners")
+}
+
+/// Partial indexes for the job queue and the CHECK constraints live in hand-written
+/// migrations because Prisma can't express them.
+model Image {
+  id                String       @id @db.Uuid
+  ownerId           String       @map("owner_id") @db.Uuid
+  owner             Owner        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  status            ImageStatus  @default(awaiting_upload)
+  originalFilename  String       @map("original_filename")
+  declaredMimeType  String       @map("declared_mime_type")
+  declaredSizeBytes Int          @map("declared_size_bytes")
+  sizeBytes         Int?         @map("size_bytes")
+  format            ImageFormat?
+  width             Int?
+  height            Int?
+  fingerprint       BigInt?
+  originalKey       String       @map("original_key")
+  normalizedKey     String?      @map("normalized_key")
+  thumbnailKey      String?      @map("thumbnail_key")
+  attempts          Int          @default(0) @db.SmallInt
+  lockedAt          DateTime?    @map("locked_at") @db.Timestamptz(3)
+  lastError         String?      @map("last_error")
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  processedAt       DateTime?    @map("processed_at") @db.Timestamptz(3)
+
+  checkResults ImageCheckResult[]
+
+  @@index([ownerId, status, createdAt(sort: Desc), id(sort: Desc)], map: "images_owner_status_created_idx")
+  @@index([ownerId, createdAt(sort: Desc), id(sort: Desc)], map: "images_owner_created_idx")
+  @@map("images")
+}
+
+model ImageCheckResult {
+  imageId     String           @map("image_id") @db.Uuid
+  image       Image            @relation(fields: [imageId], references: [id], onDelete: Cascade)
+  checkCode   CheckCode        @map("check_code")
+  outcome     CheckOutcome
+  reason      RejectionReason?
+  measurement Json             @default("{}")
+
+  @@id([imageId, checkCode])
+  @@map("image_check_results")
+}
